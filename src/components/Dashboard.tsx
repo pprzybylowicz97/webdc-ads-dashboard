@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, Download, RefreshCw } from 'lucide-react';
 
 import { CampaignTable } from './CampaignTable';
 import { MetricCard } from './MetricCard';
@@ -31,9 +31,17 @@ interface ApiResponse {
   accountLabel: string;
   currency: string;
   provider: string;
+  range: DateRange;
   fetchedAt: string;
   campaigns: Campaign[];
   baselineCampaigns: Campaign[] | null;
+}
+
+/** Parametry, dla których dane zostały już pobrane. */
+interface LoadedParams {
+  accountId: string;
+  range: DateRange;
+  compare: boolean;
 }
 
 interface DashboardProps {
@@ -44,7 +52,10 @@ interface DashboardProps {
 export function Dashboard({ accounts, defaultAccountId }: DashboardProps) {
   const [accountId, setAccountId] = useState(defaultAccountId);
   const [range, setRange] = useState<DateRange>('LAST_7_DAYS');
+  const [compare, setCompare] = useState(false);
+
   const [data, setData] = useState<ApiResponse | null>(null);
+  const [loadedParams, setLoadedParams] = useState<LoadedParams | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -56,7 +67,7 @@ export function Dashboard({ accounts, defaultAccountId }: DashboardProps) {
       const params = new URLSearchParams({
         account: accountId,
         range,
-        compare: '1',
+        compare: compare ? '1' : '0',
       });
       const response = await fetch(`/api/campaigns?${params}`);
       const body = await response.json();
@@ -64,24 +75,40 @@ export function Dashboard({ accounts, defaultAccountId }: DashboardProps) {
       if (!response.ok) {
         throw new Error(body.error ?? `Błąd ${response.status}`);
       }
+
       setData(body as ApiResponse);
+      setLoadedParams({ accountId, range, compare });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Nie udało się pobrać danych.');
-      setData(null);
     } finally {
       setLoading(false);
     }
-  }, [accountId, range]);
+  }, [accountId, range, compare]);
 
+  /*
+   * Pobieramy automatycznie tylko raz, przy wejściu na stronę.
+   *
+   * Świadomie NIE reagujemy na zmianę selektorów: przy dostawcy `zapier` każde
+   * pobranie kosztuje zadanie z miesięcznego limitu, a automatyczne odświeżanie
+   * przy każdym kliknięciu w listę potrafi spalić kilkanaście zadań w minutę.
+   * Zmiana ustawień oznacza dane jako nieaktualne i czeka na kliknięcie.
+   */
+  const didInitialLoad = useRef(false);
   useEffect(() => {
+    if (didInitialLoad.current) return;
+    didInitialLoad.current = true;
     void load();
   }, [load]);
+
+  const isStale =
+    loadedParams === null ||
+    loadedParams.accountId !== accountId ||
+    loadedParams.range !== range ||
+    loadedParams.compare !== compare;
 
   const totals = data ? sumMetrics(data.campaigns) : null;
   const derived = totals ? deriveMetrics(totals) : null;
 
-  // Okres porównawczy: 30 dni minus wybrane okno. Sensowny tylko wtedy,
-  // gdy wybrane okno jest krótsze niż baza — inaczej odejmowanie da zero.
   const baselineTotals =
     data?.baselineCampaigns && totals
       ? subtractMetrics(sumMetrics(data.baselineCampaigns), totals)
@@ -128,16 +155,52 @@ export function Dashboard({ accounts, defaultAccountId }: DashboardProps) {
           </select>
         </label>
 
+        <label className="flex items-center gap-2 py-2 text-sm">
+          <input
+            type="checkbox"
+            checked={compare}
+            onChange={(e) => setCompare(e.target.checked)}
+            className="size-4"
+          />
+          Porównaj z poprzednim okresem
+          <span className="text-xs text-text-muted">(2× zadania)</span>
+        </label>
+
         <button
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm disabled:opacity-50"
+          className={
+            isStale
+              ? 'flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50'
+              : 'flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm disabled:opacity-50'
+          }
         >
-          <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
-          Odśwież
+          {isStale ? (
+            <Download className="size-4" />
+          ) : (
+            <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
+          )}
+          {isStale ? 'Pobierz dane' : 'Odśwież'}
         </button>
       </div>
+
+      <p className="text-xs text-text-muted">
+        Każde pobranie zużywa {compare ? '2 zadania' : '1 zadanie'} Zapiera.
+        Wyniki są cache&apos;owane przez 30 minut — ponowne pobranie tych samych
+        ustawień w tym czasie jest darmowe.
+      </p>
+
+      {isStale && data && !loading && (
+        <p className="rounded-lg border border-warning/40 bg-surface p-3 text-sm text-text-muted">
+          Ustawienia zmienione. Poniżej wciąż widzisz dane dla:{' '}
+          <strong>
+            {accounts.find((a) => a.id === loadedParams?.accountId)?.label}
+          </strong>
+          , {loadedParams && DATE_RANGE_LABELS[loadedParams.range]}. Kliknij
+          „Pobierz dane”, żeby zaktualizować.
+        </p>
+      )}
 
       {error && (
         <div className="rounded-lg border border-negative/40 bg-surface p-4 text-sm">
@@ -159,9 +222,6 @@ export function Dashboard({ accounts, defaultAccountId }: DashboardProps) {
               change={
                 previous ? percentChange(derived.cost, previous.cost) : undefined
               }
-              // Sam wzrost kosztu nie jest ani dobry, ani zły — liczy się efekt,
-              // więc kierunku tu nie oceniamy kolorem pozytywnym.
-              higherIsBetter
             />
             <MetricCard
               label="CTR"
@@ -171,7 +231,6 @@ export function Dashboard({ accounts, defaultAccountId }: DashboardProps) {
                   ? percentChange(derived.ctrPercent, previous.ctrPercent)
                   : undefined
               }
-              higherIsBetter
             />
             <MetricCard
               label="Konwersje"
@@ -181,7 +240,6 @@ export function Dashboard({ accounts, defaultAccountId }: DashboardProps) {
                   ? percentChange(derived.conversions, previous.conversions)
                   : undefined
               }
-              higherIsBetter
             />
             <MetricCard
               label="Koszt / konwersję"
@@ -189,7 +247,9 @@ export function Dashboard({ accounts, defaultAccountId }: DashboardProps) {
                 formatCurrency(v, data.currency),
               )}
               change={
-                previous && derived.costPerConversion && previous.costPerConversion
+                previous &&
+                derived.costPerConversion !== null &&
+                previous.costPerConversion !== null
                   ? percentChange(
                       derived.costPerConversion,
                       previous.costPerConversion,
@@ -218,11 +278,12 @@ export function Dashboard({ accounts, defaultAccountId }: DashboardProps) {
           <CampaignTable
             campaigns={data.campaigns}
             currency={data.currency}
-            days={DATE_RANGE_DAYS[range]}
+            days={DATE_RANGE_DAYS[data.range]}
           />
 
           <p className="text-xs text-text-muted">
-            Źródło danych: {data.provider} · pobrano{' '}
+            Źródło danych: {data.provider} · {data.accountLabel} ·{' '}
+            {DATE_RANGE_LABELS[data.range]} · pobrano{' '}
             {new Date(data.fetchedAt).toLocaleString('pl-PL')}
           </p>
         </>

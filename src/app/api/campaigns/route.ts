@@ -11,20 +11,28 @@ export const dynamic = 'force-dynamic';
 const querySchema = z.object({
   account: z.string().min(1),
   range: z.enum(DATE_RANGES as unknown as [DateRange, ...DateRange[]]),
-  /** Gdy ustawione, dociągamy 30 dni, żeby wyliczyć okres porównawczy. */
+  /**
+   * Gdy '1', dociągamy dodatkowo okno 30-dniowe do wyliczenia okresu
+   * porównawczego. UWAGA: podwaja liczbę zużytych zadań Zapiera, dlatego
+   * domyślnie wyłączone.
+   */
   compare: z.enum(['0', '1']).optional().default('0'),
 });
 
 /**
  * Cache w pamięci procesu.
  *
- * Powód: przy dostawcy `zapier` każde odświeżenie zużywa zadanie Zapiera,
- * a użytkownik przełączający zakresy tam i z powrotem potrafi ich spalić
- * kilkadziesiąt w minutę. Na Vercelu cache żyje tyle, co instancja funkcji —
- * to świadomie "best effort", nie gwarancja. Jeśli okaże się za słaby,
- * naturalnym następnym krokiem jest Vercel KV.
+ * Powód: przy dostawcy `zapier` każde pobranie zużywa zadanie Zapiera, a plan
+ * bywa ciasny (100 zadań/mies. na darmowym). TTL jest długi celowo — dane
+ * reklamowe za wczoraj czy ostatnie 7 dni nie zmieniają się co minutę, a każde
+ * trafienie w cache to zadanie oszczędzone.
+ *
+ * Na Vercelu cache żyje tyle, co instancja funkcji — to świadomie "best effort",
+ * nie gwarancja: druga instancja ma pusty cache i pobierze od nowa. Gdy limit
+ * zadań zacznie boleć, następny krok to Vercel KV (cache współdzielony) albo
+ * dzienny snapshot do bazy zamiast pobierania na żądanie.
  */
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_TTL_MS = 30 * 60 * 1000;
 const cache = new Map<string, { at: number; campaigns: Campaign[] }>();
 
 async function fetchCached(

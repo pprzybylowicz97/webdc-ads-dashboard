@@ -99,9 +99,24 @@ Każda z nich kosztowała realny błąd przy pierwszym podejściu:
 3. **Settings → Environment Variables** — dodaj `ADS_PROVIDER` i `ZAPIER_MCP_URL`.
 4. Deploy.
 
-Cache w route handlerze żyje w pamięci instancji funkcji, więc na Vercelu jest
-„best effort" — chroni przed serią odświeżeń, ale nie jest współdzielony między
-instancjami. Gdy okaże się za słaby, następny krok to Vercel KV.
+## Zużycie zadań Zapiera
+
+Przy dostawcy `zapier` **każde pobranie danych kosztuje jedno zadanie** z Twojego
+miesięcznego limitu (darmowy plan Zapiera to 100 zadań). Włączone porównanie
+z poprzednim okresem podwaja koszt, bo dociąga dodatkowe okno 30-dniowe.
+
+Dlatego dashboard jest celowo oszczędny:
+
+- **porównanie domyślnie wyłączone** — włączasz świadomie checkboxem,
+- **zmiana konta lub okresu nie pobiera automatycznie** — oznacza dane jako
+  nieaktualne i czeka na kliknięcie „Pobierz dane". Bez tego przeklikanie listy
+  kont potrafi spalić kilkanaście zadań w minutę,
+- **cache 30 minut** — ponowne pobranie tych samych ustawień jest darmowe.
+
+Cache żyje w pamięci instancji funkcji, więc na Vercelu jest „best effort":
+druga instancja ma pusty cache i pobierze od nowa. Gdy limit zacznie boleć,
+kolejność kroków to Vercel KV (cache współdzielony), a docelowo przejście na
+`ADS_PROVIDER=google-ads` — bezpośrednie API nie ma limitu zapytań.
 
 ## Konta
 
